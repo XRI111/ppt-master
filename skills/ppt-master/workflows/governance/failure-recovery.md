@@ -15,7 +15,8 @@ Global stop/continue rules for all four top-level routes, plus concrete failure 
 | Failure point | Blocking | Automatic recovery | User intervention | Resume entry |
 |---|---:|---|---|---|
 | Confirm UI launch failure | No | Re-check `confirm_ui/result.json` once, then use chat fallback | No | [`generate-pptx`](../generate-pptx.md) Step 4 chat confirmation |
-| Confirm UI wait timeout | No, if no final result yet | Re-check `result.json` once; keep server cleanup mandatory | Only if user still wants the page | Step 4 same stage or chat fallback |
+| Confirm UI wait budget elapsed (exit `124`) | Yes until the stage is confirmed | The page does not expire: re-run the same `--wait-only` command and keep waiting; never fall back to chat on a timeout | No | Step 4 same stage wait |
+| User clicks **Cancel** on the Confirm UI page (exit `130`, `confirm_ui/cancelled.json`) | Yes | Stop waiting; never recover or relaunch on your own | Choose: continue in chat, relaunch the page, or stop | Step 4 same stage in chat, or relaunch with `--daemon` |
 | User explicitly switches from Confirm UI to chat during any stage | Yes until the unresolved current stage is confirmed | Follow [`confirm_ui.md`](../../scripts/docs/confirm_ui.md)'s in-run switch, retain persisted confirmed stages, then continue the current and remaining stages in chat; never relaunch UI | Confirm in chat unless explicitly delegated | Step 4 current chat stage |
 | Confirm UI Stage 1 completed then unexpectedly interrupted while UI remains selected | Yes until final Stage 2 is written/confirmed | Read existing Stage 1 `result.json`, derive a fresh `recommendations.stage2.json` without changing Stage 1, then `--wait-only` for final confirmation | Usually no | Step 4 final Stage 2 write/wait |
 | Missing final confirmation | Yes | None | User must confirm or change the values | Step 4 final confirmation |
