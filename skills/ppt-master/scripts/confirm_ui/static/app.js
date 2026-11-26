@@ -27,6 +27,11 @@
             connection_lost: "Connection to the confirm server was interrupted; retrying. If this keeps failing, return to the chat for confirmation.",
             confirmed_title: "✓ Confirmed",
             confirmed_hint: "Your choices are saved. You can close this page and return to the chat.",
+            btn_cancel: "Cancel",
+            cancel_prompt: "Stop this confirmation? The page will shut down and the AI will stop waiting. Unsubmitted edits here are discarded.",
+            cancelled_title: "Cancelled",
+            cancelled_hint: "This confirmation page has stopped. Return to the chat to continue, relaunch, or stop.",
+            cancel_failed: "Could not cancel - the server may already be stopped.",
             lang_toggle_title: "Switch language",
             sec_template_choice: "Design basis",
             template_choice_hint: "Choose how this deck should establish its design system.",
@@ -209,6 +214,11 @@
             connection_lost: "確認ページのサーバー接続が中断されました。再試行しています。失敗が続く場合はチャットで確認してください。",
             confirmed_title: "✓ 確定しました",
             confirmed_hint: "選択内容を保存しました。このページを閉じてチャットに戻ってください。",
+            btn_cancel: "キャンセル",
+            cancel_prompt: "この確認を中止しますか？ページは停止し、AI は待機をやめます。未送信の編集は破棄されます。",
+            cancelled_title: "キャンセルしました",
+            cancelled_hint: "この確認ページは停止しました。チャットに戻って続行・再起動・中止を伝えてください。",
+            cancel_failed: "キャンセルできませんでした。サーバーは既に停止している可能性があります。",
             lang_toggle_title: "言語を切り替え",
             sec_template_choice: "デザインの基準",
             template_choice_hint: "この資料のデザインシステムをどう決めるか選択します。",
@@ -391,6 +401,11 @@
             connection_lost: "确认页服务连接中断，正在重试；如果持续失败，请回到聊天窗口走聊天确认。",
             confirmed_title: "✓ 已确认",
             confirmed_hint: "选择已保存，可关闭此页并回到聊天窗口。",
+            btn_cancel: "取消",
+            cancel_prompt: "要中止本次确认吗？页面将关闭，AI 将停止等待。未提交的修改会被丢弃。",
+            cancelled_title: "已取消",
+            cancelled_hint: "确认页面已停止。请回到聊天窗口选择继续、重新打开或停止。",
+            cancel_failed: "取消失败，服务器可能已停止。",
             lang_toggle_title: "切换语言",
             sec_template_choice: "设计基础",
             template_choice_hint: "选择这份演示文稿如何建立设计系统。",
@@ -573,6 +588,11 @@
             connection_lost: "確認頁服務連線中斷，正在重試；如果持續失敗，請回到聊天視窗走聊天確認。",
             confirmed_title: "✓ 已確認",
             confirmed_hint: "選擇已儲存，可關閉此頁並回到聊天視窗。",
+            btn_cancel: "取消",
+            cancel_prompt: "要中止本次確認嗎？頁面將關閉，AI 將停止等待。未提交的修改會被捨棄。",
+            cancelled_title: "已取消",
+            cancelled_hint: "確認頁面已停止。請回到聊天視窗選擇繼續、重新開啟或停止。",
+            cancel_failed: "取消失敗，伺服器可能已停止。",
             lang_toggle_title: "切換語言",
             sec_template_choice: "設計基礎",
             template_choice_hint: "選擇這份簡報如何建立設計系統。",
@@ -4087,6 +4107,27 @@
         ov.style.display = "flex";
     }
 
+    function cancelConfirmation() {
+        if (!window.confirm(t("cancel_prompt"))) return;
+        var btn = document.getElementById("btn-cancel");
+        btn.disabled = true;
+        fetch("/api/cancel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}"
+        }).then(function (r) {
+            if (!r.ok) throw new Error("cancel failed");
+            var ov = document.getElementById("confirmed-overlay");
+            ov.querySelector(".cf-title").textContent = t("cancelled_title");
+            ov.querySelector(".cf-hint").textContent = t("cancelled_hint");
+            ov.classList.add("cancelled");
+            ov.style.display = "flex";
+        }).catch(function () {
+            btn.disabled = false;
+            document.getElementById("confirm-status").textContent = t("cancel_failed");
+        });
+    }
+
     // ---- staged submit + next-stage transitions -------------------------
     function communicationPayload() {
         var payload = {
@@ -4489,6 +4530,7 @@
         document.addEventListener("click", function () {
             if (!langMenu.hidden) setMenuOpen(false);
         });
+        document.getElementById("btn-cancel").addEventListener("click", cancelConfirmation);
         document.getElementById("btn-confirm").addEventListener("click", function () {
             if (STAGE === 1) submitStage1();
             else if (STAGE === 2) submitStage2();

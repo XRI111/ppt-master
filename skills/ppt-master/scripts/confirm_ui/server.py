@@ -91,6 +91,10 @@ RECOMMENDATION_STAGE_NAMES = {
 }
 RESULT_NAME = 'result.json'
 SESSION_NAME = 'session.json'
+# Written by the page's Cancel button. Wait callers return EXIT_CANCELLED and
+# never recover the server while it exists; a fresh ``--daemon`` launch clears it.
+CANCEL_NAME = 'cancelled.json'
+EXIT_CANCELLED = 130
 TEMPLATE_OPTIONS_NAME = 'template_options.json'
 TEMPLATE_SELECTION_NAME = 'template_selection.json'
 TEMPLATE_HANDOFF_NAME = 'template_handoff.json'
@@ -139,10 +143,30 @@ STARTUP_TIMEOUT = 10
 
 # Default --wait budget, kept just under the 600s Bash-tool ceiling so the
 # parent (waiting) command returns before the calling harness kills it. The
-# detached child server keeps running on its own --timeout idle budget, so a
-# slow user can still confirm after the wait returns; the caller re-checks
-# result.json before falling back to chat.
+# detached child server never idles out by default (SERVER_IDLE_TIMEOUT_DEFAULT),
+# so a wait timeout is not a page timeout: the caller re-attaches with
+# ``--wait-only`` and keeps waiting until the user submits or cancels.
 WAIT_TIMEOUT_DEFAULT = 590
+# Server idle auto-shutdown. 0 = disabled: the page stays live until it is
+# submitted, cancelled from the page, or stopped with ``--shutdown``.
+SERVER_IDLE_TIMEOUT_DEFAULT = 0
+
+
+def _cancel_file(confirm_dir: Path) -> Path:
+    return confirm_dir / CANCEL_NAME
+
+
+def _cancelled(confirm_dir: Path) -> bool:
+    return _cancel_file(confirm_dir).is_file()
+
+
+def _log_cancelled(confirm_dir: Path) -> None:
+    logger.error(
+        '[CANCELLED] the user cancelled confirmation on the page (%s). Stop '
+        'waiting; do not relaunch or recover the page. Ask in chat whether to '
+        'continue in chat, relaunch the page, or stop.',
+        _cancel_file(confirm_dir),
+    )
 
 def _read_json_object(path: Path, retries: int = 2, delay: float = 0.08) -> dict:
     """Read a JSON object, retrying briefly around non-atomic external writes."""
@@ -1087,6 +1111,10 @@ def _wait_for_result(
             except OSError:
                 pass
 
+        if _cancelled(result_file.parent):
+            _log_cancelled(result_file.parent)
+            return EXIT_CANCELLED
+
         returncode = proc.poll()
         if returncode is not None:
             logger.error('confirm UI exited before a fresh result was written')
@@ -1094,8 +1122,9 @@ def _wait_for_result(
 
         if deadline is not None and time.time() >= deadline:
             logger.error(
-                'timed out waiting for browser confirmation — the page is still '
-                'open; re-check %s before falling back to chat', result_file,
+                'wait budget elapsed with no confirmation yet — the page is still '
+                'live and does not expire; re-attach with --wait-only and keep '
+                'waiting (%s)', result_file,
             )
             return 124
 
@@ -2168,6 +2197,10 @@ def _wait_only_for_result(
             )
             return 1
 
+        if _cancelled(confirm_dir):
+            _log_cancelled(confirm_dir)
+            return EXIT_CANCELLED
+
         lock = _read_lock(lock_file)
         pid = _lock_pid(lock)
         if not pid or not _process_alive(pid):
@@ -2176,8 +2209,9 @@ def _wait_only_for_result(
 
         if deadline is not None and time.time() >= deadline:
             logger.error(
-                'timed out waiting for confirmation stage=%s — the page may still '
-                'be open; re-check %s before falling back to chat', target_stage, result_file,
+                'wait budget elapsed before confirmation stage=%s — the page is '
+                'still live and does not expire; re-run the same --wait-only '
+                'command and keep waiting (%s)', target_stage, result_file,
             )
             return 124
 
@@ -2361,7 +2395,7 @@ def _build_ai_image_comparison() -> dict:
 
 def create_app(
     project_dir: str,
-    idle_timeout: int = 900,
+    idle_timeout: int = SERVER_IDLE_TIMEOUT_DEFAULT,
     lock_file: Optional[Path] = None,
     server_port: Optional[int] = None,
 ) -> Flask:
@@ -2410,6 +2444,26 @@ def create_app(
             _exit_with_lock_release(0)
         threading.Thread(target=_stop, daemon=True).start()
         return jsonify({'status': 'ok'})
+
+    @app.route('/api/cancel', methods=['POST'])
+    def cancel():
+        """User abandoned confirmation from the page: persist a receipt, then exit."""
+        confirm_dir.mkdir(parents=True, exist_ok=True)
+        receipt = {
+            'status': 'cancelled',
+            'expected_stage': _expected_result_stage(confirm_dir),
+            'cancelled_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+        }
+        tmp = _cancel_file(confirm_dir).with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+        os.replace(tmp, _cancel_file(confirm_dir))
+
+        def _stop():
+            time.sleep(0.5)
+            logger.info('cancelled by user from the page; shutting down')
+            _exit_with_lock_release(0)
+        threading.Thread(target=_stop, daemon=True).start()
+        return jsonify({'status': 'cancelled'})
 
     @app.route('/')
     def index():
@@ -2830,11 +2884,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--wait-timeout', type=int, default=WAIT_TIMEOUT_DEFAULT,
         help=f'Seconds the wait caller blocks before returning (default: {WAIT_TIMEOUT_DEFAULT}; '
-             '0 = no limit). Kept under the caller\'s tool timeout; the detached server lives on.',
+             '0 = no limit). Kept under the caller\'s tool timeout; the detached server lives on '
+             'and the caller re-attaches until the user submits or cancels.',
     )
     parser.add_argument(
-        '--timeout', type=int, default=900,
-        help='Server idle timeout in seconds (default: 900; 0 = disabled)',
+        '--timeout', type=int, default=SERVER_IDLE_TIMEOUT_DEFAULT,
+        help='Server idle timeout in seconds (default: 0 = never; the page stays '
+             'live until submitted, cancelled on the page, or --shutdown)',
     )
     parser.add_argument(
         '--shutdown', action='store_true',
@@ -2920,6 +2976,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         wait_status = _wait_result_status(result_file, wait_stage)
         if wait_status is not None:
             return wait_status
+        if _cancelled(confirm_dir):
+            _log_cancelled(confirm_dir)
+            return EXIT_CANCELLED
         if wait_stage == 'stage1':
             readiness_error = _stage1_ready_error(confirm_dir)
         else:
@@ -2992,6 +3051,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         confirm_dir = project_path / CONFIRM_DIR_NAME
         result_file = confirm_dir / RESULT_NAME
+        # A deliberate relaunch supersedes an earlier page cancel.
+        _cancel_file(confirm_dir).unlink(missing_ok=True)
         expected_stage = _expected_result_stage(confirm_dir)
         started_at = time.time()
         try:
